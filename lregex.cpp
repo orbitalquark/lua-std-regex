@@ -29,28 +29,30 @@ static int get_init(lua_State *L) {
 	return init > 0 && init < len ? init : 0;
 }
 
+using svmatch = std::match_results<std::string_view::const_iterator>;
+
 /** Returns a regex search result using arguments on the Lua stack. */
-static std::cmatch search(lua_State *L) {
+static svmatch search(lua_State *L) {
 	const std::string_view s{luaL_checkstring(L, 1)};
-	std::cmatch results;
-	return (std::regex_search(s.begin() + get_init(L), s.end(), results, get_regex(L)), results);
+	svmatch results;
+	return (std::regex_search(s.cbegin() + get_init(L), s.cend(), results, get_regex(L)), results);
 }
 
 /** Pushes the given regex search result onto the Lua stack.
  * If there are no captures, pushes the entire match (except if *only_subs* is `true`).
  * If there are captures, pushes all of them and excludes the entire match.
  */
-static int push_results(lua_State *L, const std::cmatch &m, bool only_subs = false) {
+static int push_results(lua_State *L, const svmatch &m, bool only_subs = false) {
 	if (m.size() == 0) return (lua_pushnil(L), 1);
-	if (m.size() == 1 && !only_subs) return (lua_pushlstring(L, m[0].first, m[0].length()), 1);
+	if (m.size() == 1 && !only_subs) return (lua_pushlstring(L, &*m[0].first, m[0].length()), 1);
 	luaL_checkstack(L, m.size() - 1, "too many captures");
-	for (int i = 1; i < m.size(); i++) lua_pushlstring(L, m[i].first, m[i].length());
+	for (int i = 1; i < m.size(); i++) lua_pushlstring(L, &*m[i].first, m[i].length());
 	return m.size() - 1;
 }
 
 /** regex.find() Lua function. */
 static int find(lua_State *L) {
-	const std::cmatch &m = search(L);
+	const svmatch &m = search(L);
 	const int init = get_init(L), n = push_results(L, m, true);
 	if (n == 1 && lua_isnil(L, -1)) return n;
 	lua_pushinteger(L, init + m.position(0) + 1), lua_insert(L, -n - 1);
@@ -62,11 +64,11 @@ static int find(lua_State *L) {
  * This class is the "initial state" used in Lua's generic for loop.
  */
 class Generator {
-	using iterator = std::regex_iterator<std::string_view::iterator>;
+	using iterator = std::regex_iterator<std::string_view::const_iterator>;
 
 public:
 	Generator(const char *s_, const std::regex &re_, int init)
-			: s{s_}, sv{s.c_str()}, re{re_}, it{sv.begin() + init, sv.end(), re} {}
+			: s{s_}, sv{s.c_str()}, re{re_}, it{sv.cbegin() + init, sv.cend(), re} {}
 	iterator next() { return it++; }
 	iterator &end() { return last; }
 
@@ -112,9 +114,10 @@ static int gsub(lua_State *L) {
 		return luaL_typeerror(L, 3, "string/function/table");
 	int n = 0, N = luaL_optinteger(L, 4, 0), repl = lua_type(L, 3);
 	std::string result;
-	auto it = std::regex_iterator<std::string_view::iterator>{s.begin(), s.end(), re}, last_it = it;
+	auto it = std::regex_iterator<std::string_view::const_iterator>{s.cbegin(), s.cend(), re},
+			 last_it = it;
 	for (decltype(it) last; it != last && (!N || n < N); last_it = it++) {
-		result.append(it->prefix().first, it->prefix().length());
+		result.append(&*it->prefix().first, it->prefix().length());
 		if (repl == LUA_TTABLE || repl == LUA_TFUNCTION) {
 			if (repl == LUA_TTABLE)
 				lua_pop(L, push_results(L, *it) - 1), lua_gettable(L, 3); // only first result matters
@@ -125,14 +128,15 @@ static int gsub(lua_State *L) {
 					return luaL_error(L, "invalid replacement value (a %s)", luaL_typename(L, -1));
 				result += lua_tostring(L, -1);
 			} else
-				result.append((*it)[0].first, it->length(0)); // keep the original match
+				result.append(&*(*it)[0].first, it->length(0)); // keep the original match
 			lua_pop(L, 1), n++;
 		} else {
 			const std::string_view r{lua_tostring(L, 3)};
-			it->format(std::back_inserter(result), r.begin(), r.end()), n++;
+			it->format(std::back_inserter(result), r.data(), r.data() + r.size()), n++;
 		}
 	}
-	if (last_it != it) result.append(last_it->suffix().first, last_it->suffix().length());
+	if (last_it != it && last_it->suffix().length() > 0)
+		result.append(&*last_it->suffix().first, last_it->suffix().length());
 	return (n > 0 ? static_cast<void>(lua_pushstring(L, result.c_str())) : lua_pushvalue(L, 1),
 		lua_pushinteger(L, n), 2);
 }
