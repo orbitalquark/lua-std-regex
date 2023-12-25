@@ -1,4 +1,4 @@
-// Copyright 2023 Mitchell. See LICENSE.
+// Copyright 2023-2024 Mitchell. See LICENSE.
 
 #include <string_view>
 #include <regex>
